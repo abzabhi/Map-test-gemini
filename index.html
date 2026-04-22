@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Golf PWA Tracker</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; background: #111; font-family: sans-serif; }
+        #map { height: 100%; width: 100%; }
+        #ui {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90%;
+            max-width: 400px;
+            background: rgba(30, 30, 30, 0.9);
+            color: #fff;
+            padding: 15px;
+            border-radius: 12px;
+            z-index: 1000;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            box-sizing: border-box;
+        }
+        .row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 1.1em; }
+        .val { font-weight: bold; color: #2ecc71; }
+        button {
+            width: 100%;
+            padding: 12px;
+            margin-top: 10px;
+            background: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 1em;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="ui">
+    <div class="row">
+        <span>You ➔ Target 1:</span>
+        <span class="val" id="dist1">-- yds</span>
+    </div>
+    <div class="row">
+        <span>Target 1 ➔ Target 2:</span>
+        <span class="val" id="dist2">-- yds</span>
+    </div>
+    <button onclick="resetPins()">Clear Pins</button>
+</div>
+
+<script>
+    const map = L.map('map', { zoomControl: false }).setView([0, 0], 18);
+    
+    // Esri Satellite Imagery
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 20,
+        attribution: 'Esri'
+    }).addTo(map);
+
+    let userMarker = null;
+    let userCoords = null;
+    let customPins = [];
+    let polylines = [];
+
+    // Custom Icons
+    const userIcon = L.divIcon({ className: 'custom-icon', html: '<div style="background:#3498db; width:16px; height:16px; border-radius:50%; border:3px solid #fff;"></div>' });
+    const pinIcon = L.divIcon({ className: 'custom-icon', html: '<div style="background:#e74c3c; width:16px; height:16px; border-radius:50%; border:3px solid #fff;"></div>' });
+
+    // Handle Map Clicks (Max 2 pins)
+    map.on('click', function(e) {
+        if (customPins.length >= 2) return;
+
+        let marker = L.marker(e.latlng, { icon: pinIcon, draggable: true }).addTo(map);
+        customPins.push(marker);
+
+        marker.on('drag', updateDistances);
+        updateDistances();
+    });
+
+    // Track User Location
+    if ('geolocation' in navigator) {
+        navigator.geolocation.watchPosition(pos => {
+            const lat = pos.coords.latitude;
+            const lng = pos.coords.longitude;
+            userCoords = L.latLng(lat, lng);
+
+            if (!userMarker) {
+                userMarker = L.marker(userCoords, { icon: userIcon }).addTo(map);
+                map.setView(userCoords, 18);
+            } else {
+                userMarker.setLatLng(userCoords);
+            }
+            updateDistances();
+        }, err => console.error("GPS Error:", err), { enableHighAccuracy: true });
+    }
+
+    // Calculate and Draw Lines
+    function updateDistances() {
+        // Clear old lines
+        polylines.forEach(line => map.removeLayer(line));
+        polylines = [];
+
+        // Dist 1: User to Target 1
+        if (userCoords && customPins.length > 0) {
+            const t1 = customPins[0].getLatLng();
+            const d1 = Math.round(userCoords.distanceTo(t1) * 1.09361);
+            document.getElementById('dist1').innerText = d1 + ' yds';
+            
+            const line1 = L.polyline([userCoords, t1], { color: '#f1c40f', dashArray: '5, 5' }).addTo(map);
+            polylines.push(line1);
+        } else {
+            document.getElementById('dist1').innerText = '-- yds';
+        }
+
+        // Dist 2: Target 1 to Target 2
+        if (customPins.length === 2) {
+            const t1 = customPins[0].getLatLng();
+            const t2 = customPins[1].getLatLng();
+            const d2 = Math.round(t1.distanceTo(t2) * 1.09361);
+            document.getElementById('dist2').innerText = d2 + ' yds';
+
+            const line2 = L.polyline([t1, t2], { color: '#e74c3c', dashArray: '5, 5' }).addTo(map);
+            polylines.push(line2);
+        } else {
+            document.getElementById('dist2').innerText = '-- yds';
+        }
+    }
+
+    // Reset UI
+    window.resetPins = function() {
+        customPins.forEach(pin => map.removeLayer(pin));
+        polylines.forEach(line => map.removeLayer(line));
+        customPins = [];
+        polylines = [];
+        updateDistances();
+    };
+</script>
+
+</body>
+</html>
