@@ -286,7 +286,7 @@
         downloadCourseData(center.lat, center.lng);
     }
 
-  async function downloadCourseData(lat, lon) {
+    async function downloadCourseData(lat, lon) {
         setStatus('Downloading geometry...', '#3498db');
         searchPins.forEach(m => m.remove()); searchPins = [];
         document.getElementById('btnSearchHere').style.display = 'none';
@@ -309,7 +309,7 @@
 
         for (const url of endpoints) {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 12000); // 8-second timeout
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
 
             try {
                 const res = await fetch(url, { 
