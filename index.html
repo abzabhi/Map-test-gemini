@@ -293,9 +293,9 @@ async function downloadCourseData(lat, lon) {
         
         const overpassQ = `[out:json][timeout:25];
         (
-          way["golf"](around:2000, ${lat}, ${lon});
-          node["golf"](around:2000, ${lat}, ${lon});
-          relation["type"="golf_hole"](around:2000, ${lat}, ${lon});
+          way["golf"](around:1500, ${lat}, ${lon});
+          node["golf"](around:1500, ${lat}, ${lon});
+          relation["type"="golf_hole"](around:1500, ${lat}, ${lon});
         ); out body; >; out skel qt;`;
 
         let data;
