@@ -13,6 +13,7 @@
             position: fixed; top: 10px; left: 10px; z-index: 1000;
             background: rgba(15, 17, 21, 0.95); padding: 15px; border-radius: 8px;
             border: 1px solid #1e2330; width: 320px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);
+            box-sizing: border-box;
         }
         input, select {
             width: 100%; box-sizing: border-box; background: #0a0c10; border: 1px solid #1e2330;
@@ -35,7 +36,9 @@
     <div id="status">Enter Course & Location</div>
     <input type="text" id="cityInput" placeholder="City, State (e.g. London, ON)">
     <input type="text" id="courseInput" placeholder="Course Name (e.g. Forest City)">
-    <button onclick="fetchCourse()">Find & Map Course</button>
+    
+    <button id="btnFind" onclick="locateCourse()">1. Locate Course</button>
+    <button id="btnDownload" onclick="downloadData()" style="display:none; background: #3498db; color: #fff;">2. Download Data Here</button>
     
     <select id="holeSelect" style="display:none;" onchange="selectHole()">
         <option value="">-- Select Hole --</option>
@@ -52,7 +55,7 @@
 <div id="map"></div>
 
 <script>
-    const map = L.map('map', { zoomControl: false }).setView([43.034, -81.168], 14); // Default map
+    const map = L.map('map', { zoomControl: false }).setView([43.034, -81.168], 14);
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
         maxZoom: 20, attribution: 'Esri'
     }).addTo(map);
@@ -71,12 +74,11 @@
         el.style.color = color;
     }
 
-    async function fetchCourse() {
+    async function locateCourse() {
         const city = document.getElementById('cityInput').value;
         const course = document.getElementById('courseInput').value;
         if (!city || !course) return setStatus('Enter both city and course.', '#f87171');
 
-        // 1. Geocode City via Nominatim
         setStatus('Locating city...', '#4ade80');
         const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=json&limit=1`);
         const geoData = await geoRes.json();
@@ -85,48 +87,79 @@
         const lat = geoData[0].lat;
         const lon = geoData[0].lon;
 
-        // 2. Fetch OSM Data using area search (50km radius from city)
-        setStatus('Downloading course data...', '#4ade80');
+        setStatus('Finding course on map...', '#4ade80');
         const safeName = course.replace(/"/g, '\\"');
         
-        const overpassQ = `[out:json][timeout:25];
+        const overpassQ = `[out:json][timeout:15];
         (
+          node["leisure"="golf_course"]["name"~"${safeName}",i](around:50000, ${lat}, ${lon});
           way["leisure"="golf_course"]["name"~"${safeName}",i](around:50000, ${lat}, ${lon});
           relation["leisure"="golf_course"]["name"~"${safeName}",i](around:50000, ${lat}, ${lon});
         );
-        map_to_area->.c;
-        (
-          way["golf"](area.c);
-          node["golf"](area.c);
-          relation["type"="golf_hole"](area.c);
-        );
-        out body;
-        >;
-        out skel qt;`;
+        out center;`;
         
         try {
             const osmRes = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: overpassQ });
             const osmData = await osmRes.json();
 
+            document.getElementById('btnDownload').style.display = 'block';
+
             if (!osmData.elements || !osmData.elements.length) {
-                return setStatus('Course geometry not found in OSM.', '#f87171');
+                map.setView([lat, lon], 12);
+                return setStatus('Name not found. Panned to city. Find course manually and click download.', '#f59e0b');
             }
 
-            // Auto-center the map on the downloaded course features
-            let clat = 0, clon = 0, count = 0;
-            osmData.elements.forEach(e => {
-                if (e.lat) { clat += e.lat; clon += e.lon; count++; }
-            });
-            if (count > 0) map.setView([clat / count, clon / count], 16);
-
-            processOSM(osmData.elements);
+            const center = osmData.elements[0].center || osmData.elements[0];
+            map.setView([center.lat, center.lon], 16);
+            setStatus('Course located. Adjust map if needed, then download.', '#4ade80');
+            
         } catch (err) {
-            setStatus('Error fetching OSM data.', '#f87171');
+            setStatus('Error locating course.', '#f87171');
             console.error(err);
         }
     }
+
+    async function downloadData() {
+        setStatus('Downloading course data...', '#4ade80');
+        const btn = document.getElementById('btnDownload');
+        btn.disabled = true;
+
+        const bounds = map.getBounds();
+        const s = bounds.getSouth();
+        const w = bounds.getWest();
+        const n = bounds.getNorth();
+        const e = bounds.getEast();
+
+        const overpassQ = `[out:json][timeout:25];
+        (
+          way["golf"](${s},${w},${n},${e});
+          node["golf"](${s},${w},${n},${e});
+          relation["type"="golf_hole"](${s},${w},${n},${e});
+        );
+        out body;
+        >;
+        out skel qt;`;
+
+        try {
+            const osmRes = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: overpassQ });
+            const osmData = await osmRes.json();
+
+            if (!osmData.elements || !osmData.elements.length) {
+                btn.disabled = false;
+                return setStatus('No golf data found in this view.', '#f87171');
+            }
+
+            processOSM(osmData.elements);
+            btn.style.display = 'none';
+            btn.disabled = false;
+        } catch (err) {
+            setStatus('Error fetching data.', '#f87171');
+            btn.disabled = false;
+            console.error(err);
+        }
+    }
+
     function processOSM(elements) {
-        // Clear old
         mapLayers.forEach(l => map.removeLayer(l));
         mapLayers = [];
         courseHoles = {};
@@ -134,10 +167,8 @@
         const nodes = {};
         const features = [];
 
-        // Build node dict
         elements.forEach(e => { if (e.type === 'node') nodes[e.id] = [e.lat, e.lon]; });
 
-        // Extract features
         elements.forEach(e => {
             if (!e.tags || !e.tags.golf) return;
             
@@ -149,13 +180,11 @@
 
             features.push({ type: e.tags.golf, coords: coords, ref: e.tags.ref, id: e.id });
 
-            // Draw to map
             if (e.type === 'way') {
                 const poly = L.polygon(coords, { color: GC[e.tags.golf] || '#556', weight: 1, fillOpacity: 0.5 }).addTo(map);
                 mapLayers.push(poly);
             }
 
-            // Organize by hole ref
             const ref = e.tags.ref;
             if (ref) {
                 if (!courseHoles[ref]) courseHoles[ref] = {};
@@ -165,18 +194,16 @@
             }
         });
 
-        // The "Handshake" Logic for sparse data
         const unreffedGreens = features.filter(f => f.type === 'green' && !f.ref);
         
         Object.keys(courseHoles).forEach(ref => {
             const h = courseHoles[ref];
-            // If hole has a line but no tagged tee/green
             if (h.line) {
                 if (!h.tee) h.tee = h.line[0];
                 if (!h.green) {
                     const endPt = h.line[h.line.length - 1];
                     let closest = endPt;
-                    let minDist = 50; // Search within 50 meters
+                    let minDist = 50; 
                     
                     unreffedGreens.forEach(g => {
                         const center = getCenter(g.coords);
@@ -223,10 +250,8 @@
         const tee = courseHoles[ref].tee;
         const green = courseHoles[ref].green;
 
-        // Auto-focus on Tee
         map.setView(tee, 18);
 
-        // Reset paths
         if (activePath) map.removeLayer(activePath);
         if (layupMarker) map.removeLayer(layupMarker);
         
@@ -236,7 +261,6 @@
         updateUI(dist, 0, dist);
     }
 
-    // Interactive Layup (The Kink)
     map.on('click', function(e) {
         if (!currentHoleRef) return;
         
