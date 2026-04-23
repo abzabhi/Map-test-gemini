@@ -286,64 +286,37 @@
         downloadCourseData(center.lat, center.lng);
     }
 
-    async function downloadCourseData(lat, lon) {
+async function downloadCourseData(lat, lon) {
         setStatus('Downloading geometry...', '#3498db');
         searchPins.forEach(m => m.remove()); searchPins = [];
         document.getElementById('btnSearchHere').style.display = 'none';
         
-        const radius = 1500;
         const overpassQ = `[out:json][timeout:25];
         (
-          way["golf"](around:${radius}, ${lat}, ${lon});
-          node["golf"](around:${radius}, ${lat}, ${lon});
-          relation["type"="golf_hole"](around:${radius}, ${lat}, ${lon});
+          way["golf"](around:2000, ${lat}, ${lon});
+          node["golf"](around:2000, ${lat}, ${lon});
+          relation["type"="golf_hole"](around:2000, ${lat}, ${lon});
         ); out body; >; out skel qt;`;
 
-        const endpoints = [
-            'https://overpass-api.de/api/interpreter',
-            'https://overpass.kumi.systems/api/interpreter',
-            'https://lz4.overpass-api.de/api/interpreter'
-        ];
+        try {
+            const res = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: overpassQ });
+            if (!res.ok) throw new Error(`HTTP status: ${res.status}`);
+            const data = await res.json();
 
-        let data = null;
-
-        for (const url of endpoints) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-            try {
-                const res = await fetch(url, { 
-                    method: 'POST', 
-                    body: overpassQ,
-                    signal: controller.signal
-                });
-                clearTimeout(timeoutId);
-                
-                if (res.ok) {
-                    data = await res.json();
-                    break; 
-                }
-            } catch (err) {
-                clearTimeout(timeoutId);
-                console.warn(`Server ${url} failed or timed out. Trying next...`);
+            if (!data.elements || !data.elements.length) {
+                document.getElementById('btnSearchHere').style.display = 'block';
+                return setStatus('No golf features found.', '#f87171');
             }
-        }
 
-        if (!data) {
-            setStatus('All API servers busy. Try again.', '#f87171');
+            processOSM(data.elements);
+            document.getElementById('btnDownload').style.display = 'none';
+            document.getElementById('gpsToggleRow').style.display = 'flex';
+            document.getElementById('btnClear').style.display = 'block';
+        } catch (err) { 
+            setStatus('Data download failed. API busy.', '#f87171');
             document.getElementById('btnSearchHere').style.display = 'block'; 
-            return;
+            console.error("Overpass Fetch Error:", err);
         }
-
-        if (!data.elements || !data.elements.length) {
-            document.getElementById('btnSearchHere').style.display = 'block';
-            return setStatus('No golf features found.', '#f87171');
-        }
-
-        processOSM(data.elements);
-        document.getElementById('btnDownload').style.display = 'none';
-        document.getElementById('gpsToggleRow').style.display = 'flex';
-        document.getElementById('btnClear').style.display = 'block';
     }
 
     function processOSM(elements) {
