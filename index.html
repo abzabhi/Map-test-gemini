@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Live Layup Tracker</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; font-family: 'Courier New', Courier, monospace; background: #0f1115; color: #c8cdd6; }
+        #map { height: 100vh; width: 100vw; z-index: 1; }
+        #ui-panel {
+            position: fixed; top: 10px; left: 10px; z-index: 1000;
+            background: rgba(15, 17, 21, 0.95); padding: 15px; border-radius: 8px;
+            border: 1px solid #1e2330; width: 320px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);
+        }
+        input, select {
+            width: 100%; box-sizing: border-box; background: #0a0c10; border: 1px solid #1e2330;
+            color: #4ade80; padding: 8px; margin-bottom: 10px; border-radius: 4px; font-family: inherit;
+        }
+        button {
+            width: 100%; background: #4ade80; color: #0f1115; border: none; padding: 10px;
+            font-weight: bold; cursor: pointer; border-radius: 4px; font-family: inherit; margin-bottom: 10px;
+        }
+        button:hover { background: #22c55e; }
+        .stats { font-size: 12px; margin-top: 10px; display: none; }
+        .stat-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #1e2330; }
+        .val { color: #4ade80; font-weight: bold; }
+        #status { font-size: 11px; color: #f59e0b; margin-bottom: 10px; text-align: center; }
+    </style>
+</head>
+<body>
+
+<div id="ui-panel">
+    <div id="status">Enter Course & Location</div>
+    <input type="text" id="searchInput" placeholder="e.g. Forest City National, London">
+    <button onclick="fetchCourse()">Find & Map Course</button>
+    
+    <select id="holeSelect" style="display:none;" onchange="selectHole()">
+        <option value="">-- Select Hole --</option>
+    </select>
+
+    <div id="statsPanel" class="stats">
+        <div class="stat-row"><span>Tee to Target:</span><span class="val" id="valSeg1">-- yds</span></div>
+        <div class="stat-row"><span>Target to Green:</span><span class="val" id="valSeg2">-- yds</span></div>
+        <div class="stat-row" style="border:none; margin-top:4px;"><span>Total Distance:</span><span class="val" id="valTotal">-- yds</span></div>
+        <div style="font-size: 10px; color: #8899aa; margin-top: 8px; text-align: center;">Click anywhere on the map to add a layup point.</div>
+    </div>
+</div>
+
+<div id="map"></div>
+
+<script>
+    const map = L.map('map', { zoomControl: false }).setView([43.034, -81.168], 14); // Default map
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 20, attribution: 'Esri'
+    }).addTo(map);
+
+    const GC = { fairway: '#7ec850', green: '#28a050', tee: '#d0d8e0', bunker: '#c9a84c', water_hazard: '#5b9bd5', rough: '#4a7a28' };
+    
+    let courseHoles = {};
+    let mapLayers = [];
+    let activePath = null;
+    let layupMarker = null;
+    let currentHoleRef = null;
+
+    function setStatus(msg, color = '#f59e0b') {
+        const el = document.getElementById('status');
+        el.innerText = msg;
+        el.style.color = color;
+    }
+
+    async function fetchCourse() {
+        const query = document.getElementById('searchInput').value;
+        if (!query) return;
+
+        setStatus('Searching location...', '#4ade80');
+        
+        // 1. Geocode via Nominatim
+        const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`);
+        const geoData = await geoRes.json();
+        if (!geoData.length) return setStatus('Location not found.', '#f87171');
+
+        const lat = geoData[0].lat;
+        const lon = geoData[0].lon;
+        map.setView([lat, lon], 16);
+
+        // 2. Fetch OSM Data (2000m radius)
+        setStatus('Downloading course data...', '#4ade80');
+        const overpassQ = `[out:json][timeout:25];(way["golf"](around:2000, ${lat}, ${lon});node["golf"](around:2000, ${lat}, ${lon});relation["type"="golf_hole"](around:2000, ${lat}, ${lon}););out body;>;out skel qt;`;
+        
+        const osmRes = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: overpassQ });
+        const osmData = await osmRes.json();
+
+        processOSM(osmData.elements);
+    }
+
+    function processOSM(elements) {
+        // Clear old
+        mapLayers.forEach(l => map.removeLayer(l));
+        mapLayers = [];
+        courseHoles = {};
+
+        const nodes = {};
+        const features = [];
+
+        // Build node dict
+        elements.forEach(e => { if (e.type === 'node') nodes[e.id] = [e.lat, e.lon]; });
+
+        // Extract features
+        elements.forEach(e => {
+            if (!e.tags || !e.tags.golf) return;
+            
+            let coords = [];
+            if (e.type === 'way' && e.nodes) coords = e.nodes.map(id => nodes[id]).filter(Boolean);
+            else if (e.type === 'node') coords = [nodes[e.id]];
+
+            if (!coords.length) return;
+
+            features.push({ type: e.tags.golf, coords: coords, ref: e.tags.ref, id: e.id });
+
+            // Draw to map
+            if (e.type === 'way') {
+                const poly = L.polygon(coords, { color: GC[e.tags.golf] || '#556', weight: 1, fillOpacity: 0.5 }).addTo(map);
+                mapLayers.push(poly);
+            }
+
+            // Organize by hole ref
+            const ref = e.tags.ref;
+            if (ref) {
+                if (!courseHoles[ref]) courseHoles[ref] = {};
+                if (e.tags.golf === 'tee') courseHoles[ref].tee = coords[0];
+                if (e.tags.golf === 'green') courseHoles[ref].green = getCenter(coords);
+                if (e.tags.golf === 'hole') courseHoles[ref].line = coords;
+            }
+        });
+
+        // The "Handshake" Logic for sparse data
+        const unreffedGreens = features.filter(f => f.type === 'green' && !f.ref);
+        
+        Object.keys(courseHoles).forEach(ref => {
+            const h = courseHoles[ref];
+            // If hole has a line but no tagged tee/green
+            if (h.line) {
+                if (!h.tee) h.tee = h.line[0];
+                if (!h.green) {
+                    const endPt = h.line[h.line.length - 1];
+                    let closest = endPt;
+                    let minDist = 50; // Search within 50 meters
+                    
+                    unreffedGreens.forEach(g => {
+                        const center = getCenter(g.coords);
+                        const dist = map.distance(endPt, center);
+                        if (dist < minDist) { minDist = dist; closest = center; }
+                    });
+                    h.green = closest;
+                }
+            }
+        });
+
+        populateDropdown();
+    }
+
+    function populateDropdown() {
+        const select = document.getElementById('holeSelect');
+        select.innerHTML = '<option value="">-- Select Hole --</option>';
+        
+        const validHoles = Object.keys(courseHoles)
+            .filter(ref => courseHoles[ref].tee && courseHoles[ref].green)
+            .sort((a, b) => parseInt(a) - parseInt(b));
+
+        if (!validHoles.length) {
+            setStatus('No complete holes found in OSM data.', '#f87171');
+            return;
+        }
+
+        validHoles.forEach(ref => {
+            const opt = document.createElement('option');
+            opt.value = ref;
+            opt.innerText = `Hole ${ref}`;
+            select.appendChild(opt);
+        });
+
+        select.style.display = 'block';
+        setStatus(`Course mapped. Found ${validHoles.length} holes.`, '#4ade80');
+    }
+
+    function selectHole() {
+        const ref = document.getElementById('holeSelect').value;
+        if (!ref) return;
+
+        currentHoleRef = ref;
+        const tee = courseHoles[ref].tee;
+        const green = courseHoles[ref].green;
+
+        // Auto-focus on Tee
+        map.setView(tee, 18);
+
+        // Reset paths
+        if (activePath) map.removeLayer(activePath);
+        if (layupMarker) map.removeLayer(layupMarker);
+        
+        activePath = L.polyline([tee, green], { color: '#f1c40f', dashArray: '5, 5', weight: 3 }).addTo(map);
+
+        const dist = Math.round(map.distance(tee, green) * 1.09361);
+        updateUI(dist, 0, dist);
+    }
+
+    // Interactive Layup (The Kink)
+    map.on('click', function(e) {
+        if (!currentHoleRef) return;
+        
+        const tee = courseHoles[currentHoleRef].tee;
+        const green = courseHoles[currentHoleRef].green;
+        const kink = [e.latlng.lat, e.latlng.lng];
+
+        if (layupMarker) map.removeLayer(layupMarker);
+        layupMarker = L.circleMarker(kink, { color: '#e74c3c', radius: 6, fillOpacity: 1 }).addTo(map);
+
+        activePath.setLatLngs([tee, kink, green]);
+
+        const d1 = Math.round(map.distance(tee, kink) * 1.09361);
+        const d2 = Math.round(map.distance(kink, green) * 1.09361);
+        updateUI(d1, d2, d1 + d2);
+    });
+
+    function updateUI(seg1, seg2, total) {
+        document.getElementById('statsPanel').style.display = 'block';
+        document.getElementById('valSeg1').innerText = seg1 + ' yds';
+        document.getElementById('valSeg2').innerText = seg2 > 0 ? seg2 + ' yds' : '-- yds';
+        document.getElementById('valTotal').innerText = total + ' yds';
+    }
+
+    function getCenter(coords) {
+        if (coords.length === 1) return coords[0];
+        let latSum = 0, lngSum = 0;
+        coords.forEach(c => { latSum += c[0]; lngSum += c[1]; });
+        return [latSum / coords.length, lngSum / coords.length];
+    }
+</script>
+</body>
+</html>
