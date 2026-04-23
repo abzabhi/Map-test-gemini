@@ -97,7 +97,6 @@
 <div id="map"></div>
 
 <script>
-    // Initialize MapLibre (Note: MapLibre uses [lng, lat] coordinate order)
     const map = new maplibregl.Map({
         container: 'map',
         style: {
@@ -118,8 +117,8 @@
     let courseHoles = {};
     let searchPins = [];
     let currentHoleKey = null;
-    let activeTeePt = null; // [lng, lat]
-    let targetPt = null;    // [lng, lat]
+    let activeTeePt = null; 
+    let targetPt = null;    
 
     let teeMarker = null;
     let layupMarker = null;
@@ -128,10 +127,8 @@
     let gpsWatchId = null;
 
     map.on('load', () => {
-        // Source for OSM Polygons
         map.addSource('course-polygons', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
         
-        // Add layers for each feature type
         for (const [type, color] of Object.entries(GC)) {
             map.addLayer({
                 id: `poly-${type}`,
@@ -149,7 +146,6 @@
             });
         }
 
-        // Source and Layers for Layup Paths and Arrows
         map.addSource('active-path', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
         
         map.addLayer({
@@ -159,7 +155,6 @@
             paint: { 'line-color': '#f1c40f', 'line-width': 3, 'line-dasharray': [2, 2] }
         });
 
-        // Directional Arrows rendering along the path
         map.addLayer({
             id: 'path-arrows',
             type: 'symbol',
@@ -174,7 +169,6 @@
             paint: { 'text-color': '#f1c40f', 'text-halo-color': '#000', 'text-halo-width': 1 }
         });
 
-        // Map click logic for layup point
         map.on('click', (e) => {
             if (!currentHoleKey) return;
             targetPt = [e.lngLat.lng, e.lngLat.lat];
@@ -292,7 +286,7 @@
         downloadCourseData(center.lat, center.lng);
     }
 
-async function downloadCourseData(lat, lon) {
+    async function downloadCourseData(lat, lon) {
         setStatus('Downloading geometry...', '#3498db');
         searchPins.forEach(m => m.remove()); searchPins = [];
         document.getElementById('btnSearchHere').style.display = 'none';
@@ -331,7 +325,7 @@ async function downloadCourseData(lat, lon) {
         const geoFeatures = [];
         const rawFeatures = [];
 
-        elements.forEach(e => { if (e.type === 'node') nodes[e.id] = [e.lon, e.lat]; }); // Note: [lon, lat]
+        elements.forEach(e => { if (e.type === 'node') nodes[e.id] = [e.lon, e.lat]; }); 
 
         elements.forEach(e => {
             if (!e.tags || !e.tags.golf) return;
@@ -343,7 +337,6 @@ async function downloadCourseData(lat, lon) {
             rawFeatures.push({ type: e.tags.golf, coords: coords, ref: e.tags.ref, course: e.tags.course || 'Main' });
 
             if (e.type === 'way') {
-                // Ensure polygon is closed for GeoJSON
                 const polyCoords = [...coords];
                 if (polyCoords[0][0] !== polyCoords[polyCoords.length-1][0] || polyCoords[0][1] !== polyCoords[polyCoords.length-1][1]) {
                     polyCoords.push(polyCoords[0]);
@@ -362,10 +355,8 @@ async function downloadCourseData(lat, lon) {
             }
         });
 
-        // Update map source
         map.getSource('course-polygons').setData(turf.featureCollection(geoFeatures));
 
-        // Handshake
         const unreffedGreens = rawFeatures.filter(f => f.type === 'green' && !f.ref);
         Object.keys(courseHoles).forEach(key => {
             const h = courseHoles[key];
@@ -422,7 +413,6 @@ async function downloadCourseData(lat, lon) {
         
         activeTeePt = h.tee;
 
-        // Dynamic Bearing Calculation
         const brg = turf.bearing(turf.point(activeTeePt), turf.point(h.green));
 
         if (!userCoords) {
