@@ -15,7 +15,7 @@
             border: 1px solid #1e2330; width: 320px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);
             box-sizing: border-box;
         }
-        input, select {
+        input[type="text"], select {
             width: 100%; box-sizing: border-box; background: #0a0c10; border: 1px solid #1e2330;
             color: #4ade80; padding: 8px; margin-bottom: 10px; border-radius: 4px; font-family: inherit;
         }
@@ -28,6 +28,8 @@
         .stat-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #1e2330; }
         .val { color: #4ade80; font-weight: bold; }
         #status { font-size: 11px; color: #f59e0b; margin-bottom: 10px; text-align: center; }
+        .toggle-row { display: flex; align-items: center; margin-bottom: 10px; display: none; }
+        .toggle-row input { margin-right: 8px; }
     </style>
 </head>
 <body>
@@ -44,8 +46,13 @@
         <option value="">-- Select Hole --</option>
     </select>
 
+    <div class="toggle-row" id="gpsToggleRow">
+        <input type="checkbox" id="gpsToggle" onchange="toggleGPS()">
+        <label for="gpsToggle" style="font-size: 12px; color: #4ade80; cursor: pointer;">Use Live GPS</label>
+    </div>
+
     <div id="statsPanel" class="stats">
-        <div class="stat-row"><span>Tee to Target:</span><span class="val" id="valSeg1">-- yds</span></div>
+        <div class="stat-row"><span id="lblSeg1">Start to Target:</span><span class="val" id="valSeg1">-- yds</span></div>
         <div class="stat-row"><span>Target to Green:</span><span class="val" id="valSeg2">-- yds</span></div>
         <div class="stat-row" style="border:none; margin-top:4px;"><span>Total Distance:</span><span class="val" id="valTotal">-- yds</span></div>
         <div style="font-size: 10px; color: #8899aa; margin-top: 8px; text-align: center;">Click anywhere on the map to add a layup point.</div>
@@ -67,6 +74,11 @@
     let activePath = null;
     let layupMarker = null;
     let currentHoleRef = null;
+    let targetPt = null;
+
+    let userMarker = null;
+    let userCoords = null;
+    let gpsWatchId = null;
 
     function setStatus(msg, color = '#f59e0b') {
         const el = document.getElementById('status');
@@ -152,6 +164,7 @@
             processOSM(osmData.elements);
             btn.style.display = 'none';
             btn.disabled = false;
+            document.getElementById('gpsToggleRow').style.display = 'flex';
         } catch (err) {
             setStatus('Error fetching data.', '#f87171');
             btn.disabled = false;
@@ -242,44 +255,97 @@
         setStatus(`Course mapped. Found ${validHoles.length} holes.`, '#4ade80');
     }
 
+    function toggleGPS() {
+        const useGPS = document.getElementById('gpsToggle').checked;
+        if (useGPS) {
+            if ('geolocation' in navigator) {
+                setStatus('Acquiring GPS...', '#f59e0b');
+                gpsWatchId = navigator.geolocation.watchPosition(pos => {
+                    setStatus(`GPS Active. ±${Math.round(pos.coords.accuracy)}m`, '#4ade80');
+                    userCoords = L.latLng(pos.coords.latitude, pos.coords.longitude);
+                    
+                    if (!userMarker) {
+                        userMarker = L.circleMarker(userCoords, { color: '#3498db', radius: 8, fillOpacity: 1, stroke: true, weight: 2, color: '#fff' }).addTo(map);
+                    } else {
+                        userMarker.setLatLng(userCoords);
+                    }
+                    
+                    if (currentHoleRef) updatePathsAndDistances();
+                }, err => {
+                    console.error("GPS Error:", err);
+                    setStatus('GPS Error or Denied.', '#f87171');
+                    document.getElementById('gpsToggle').checked = false;
+                    toggleGPS();
+                }, { enableHighAccuracy: true });
+            }
+        } else {
+            if (gpsWatchId !== null) {
+                navigator.geolocation.clearWatch(gpsWatchId);
+                gpsWatchId = null;
+            }
+            if (userMarker) {
+                map.removeLayer(userMarker);
+                userMarker = null;
+            }
+            userCoords = null;
+            setStatus(`Course mapped. Found ${Object.keys(courseHoles).length} holes.`, '#4ade80');
+            if (currentHoleRef) updatePathsAndDistances();
+        }
+    }
+
     function selectHole() {
         const ref = document.getElementById('holeSelect').value;
-        if (!ref) return;
-
+        if (!ref) { currentHoleRef = null; return; }
+        
         currentHoleRef = ref;
+        targetPt = null; 
+        
         const tee = courseHoles[ref].tee;
-        const green = courseHoles[ref].green;
+        if (!userCoords) map.setView(tee, 18);
 
-        map.setView(tee, 18);
-
-        if (activePath) map.removeLayer(activePath);
         if (layupMarker) map.removeLayer(layupMarker);
         
-        activePath = L.polyline([tee, green], { color: '#f1c40f', dashArray: '5, 5', weight: 3 }).addTo(map);
-
-        const dist = Math.round(map.distance(tee, green) * 1.09361);
-        updateUI(dist, 0, dist);
+        updatePathsAndDistances();
     }
 
     map.on('click', function(e) {
         if (!currentHoleRef) return;
         
-        const tee = courseHoles[currentHoleRef].tee;
-        const green = courseHoles[currentHoleRef].green;
-        const kink = [e.latlng.lat, e.latlng.lng];
+        targetPt = e.latlng;
 
-        if (layupMarker) map.removeLayer(layupMarker);
-        layupMarker = L.circleMarker(kink, { color: '#e74c3c', radius: 6, fillOpacity: 1 }).addTo(map);
+        if (!layupMarker) {
+            layupMarker = L.circleMarker(targetPt, { color: '#e74c3c', radius: 6, fillOpacity: 1 }).addTo(map);
+        } else {
+            layupMarker.setLatLng(targetPt);
+        }
 
-        activePath.setLatLngs([tee, kink, green]);
-
-        const d1 = Math.round(map.distance(tee, kink) * 1.09361);
-        const d2 = Math.round(map.distance(kink, green) * 1.09361);
-        updateUI(d1, d2, d1 + d2);
+        updatePathsAndDistances();
     });
 
-    function updateUI(seg1, seg2, total) {
+    function updatePathsAndDistances() {
+        if (!currentHoleRef) return;
+        
+        const green = courseHoles[currentHoleRef].green;
+        const startPt = userCoords ? userCoords : courseHoles[currentHoleRef].tee;
+        const startLabel = userCoords ? "You" : "Tee";
+
+        if (activePath) map.removeLayer(activePath);
+
+        if (targetPt) {
+            activePath = L.polyline([startPt, targetPt, green], { color: '#f1c40f', dashArray: '5, 5', weight: 3 }).addTo(map);
+            const d1 = Math.round(map.distance(startPt, targetPt) * 1.09361);
+            const d2 = Math.round(map.distance(targetPt, green) * 1.09361);
+            updateUI(d1, d2, d1 + d2, startLabel);
+        } else {
+            activePath = L.polyline([startPt, green], { color: '#f1c40f', dashArray: '5, 5', weight: 3 }).addTo(map);
+            const dist = Math.round(map.distance(startPt, green) * 1.09361);
+            updateUI(dist, 0, dist, startLabel);
+        }
+    }
+
+    function updateUI(seg1, seg2, total, startLabel) {
         document.getElementById('statsPanel').style.display = 'block';
+        document.getElementById('lblSeg1').innerText = `${startLabel} to Target:`;
         document.getElementById('valSeg1').innerText = seg1 + ' yds';
         document.getElementById('valSeg2').innerText = seg2 > 0 ? seg2 + ' yds' : '-- yds';
         document.getElementById('valTotal').innerText = total + ' yds';
