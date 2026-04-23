@@ -298,24 +298,31 @@ async function downloadCourseData(lat, lon) {
           relation["type"="golf_hole"](around:2000, ${lat}, ${lon});
         ); out body; >; out skel qt;`;
 
+        let data;
         try {
             const res = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: overpassQ });
             if (!res.ok) throw new Error(`HTTP status: ${res.status}`);
-            const data = await res.json();
-
-            if (!data.elements || !data.elements.length) {
-                document.getElementById('btnSearchHere').style.display = 'block';
-                return setStatus('No golf features found.', '#f87171');
-            }
-
-            processOSM(data.elements);
-            document.getElementById('btnDownload').style.display = 'none';
-            document.getElementById('gpsToggleRow').style.display = 'flex';
-            document.getElementById('btnClear').style.display = 'block';
+            data = await res.json();
         } catch (err) { 
             setStatus('Data download failed. API busy.', '#f87171');
             document.getElementById('btnSearchHere').style.display = 'block'; 
             console.error("Overpass Fetch Error:", err);
+            return;
+        }
+
+        if (!data.elements || !data.elements.length) {
+            document.getElementById('btnSearchHere').style.display = 'block';
+            return setStatus('No golf features found.', '#f87171');
+        }
+
+        try {
+            processOSM(data.elements);
+            document.getElementById('btnDownload').style.display = 'none';
+            document.getElementById('gpsToggleRow').style.display = 'flex';
+            document.getElementById('btnClear').style.display = 'block';
+        } catch (err) {
+            setStatus('Error drawing map data.', '#f87171');
+            console.error("Geometry processing error:", err);
         }
     }
 
@@ -336,12 +343,17 @@ async function downloadCourseData(lat, lon) {
 
             rawFeatures.push({ type: e.tags.golf, coords: coords, ref: e.tags.ref, course: e.tags.course || 'Main' });
 
-            if (e.type === 'way') {
-                const polyCoords = [...coords];
-                if (polyCoords[0][0] !== polyCoords[polyCoords.length-1][0] || polyCoords[0][1] !== polyCoords[polyCoords.length-1][1]) {
-                    polyCoords.push(polyCoords[0]);
+if (e.type === 'way') {
+                if (e.tags.golf !== 'hole') { // Do not force hole paths into polygons
+                    const polyCoords = [...coords];
+                    if (polyCoords[0][0] !== polyCoords[polyCoords.length-1][0] || polyCoords[0][1] !== polyCoords[polyCoords.length-1][1]) {
+                        polyCoords.push(polyCoords[0]);
+                    }
+                    // Turf requires at least 4 points to form a closed shape
+                    if (polyCoords.length >= 4) {
+                        geoFeatures.push(turf.polygon([polyCoords], { golf: e.tags.golf }));
+                    }
                 }
-                geoFeatures.push(turf.polygon([polyCoords], { golf: e.tags.golf }));
             }
 
             const ref = e.tags.ref;
