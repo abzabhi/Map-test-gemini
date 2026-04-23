@@ -286,7 +286,7 @@
         downloadCourseData(center.lat, center.lng);
     }
 
-async function downloadCourseData(lat, lon) {
+    async function downloadCourseData(lat, lon) {
         setStatus('Downloading geometry...', '#3498db');
         searchPins.forEach(m => m.remove()); searchPins = [];
         document.getElementById('btnSearchHere').style.display = 'none';
@@ -320,25 +320,20 @@ async function downloadCourseData(lat, lon) {
         }
 
         if (!data) {
-            setStatus('All API servers are busy. Try again later.', '#f87171');
+            setStatus('All API servers busy. Try again.', '#f87171');
             document.getElementById('btnSearchHere').style.display = 'block'; 
             return;
         }
 
         if (!data.elements || !data.elements.length) {
             document.getElementById('btnSearchHere').style.display = 'block';
-            return setStatus('No golf features found at this location.', '#f87171');
+            return setStatus('No golf features found.', '#f87171');
         }
 
         processOSM(data.elements);
         document.getElementById('btnDownload').style.display = 'none';
         document.getElementById('gpsToggleRow').style.display = 'flex';
         document.getElementById('btnClear').style.display = 'block';
-    } catch (err) { 
-            setStatus('Data download failed. API busy.', '#f87171');
-            document.getElementById('btnSearchHere').style.display = 'block'; 
-            console.error("Overpass Fetch Error:", err);
-        }
     }
 
     function processOSM(elements) {
