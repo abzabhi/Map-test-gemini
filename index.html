@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Live Layup Tracker</title>
+    
+    <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/@turf/turf/turf.min.js"></script>
+
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; font-family: 'Courier New', Courier, monospace; background: #0f1115; color: #c8cdd6; overflow: hidden; }
+        #map { height: 100vh; width: 100vw; z-index: 1; }
+        
+        #ui-panel {
+            position: fixed; top: 10px; left: 10px; z-index: 1000;
+            background: rgba(15, 17, 21, 0.95); padding: 15px; border-radius: 8px;
+            border: 1px solid #1e2330; width: 320px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);
+            box-sizing: border-box; max-height: 90vh; overflow-y: auto;
+        }
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #1e2330; padding-bottom: 5px; }
+        .header-row h3 { margin: 0; font-size: 14px; color: #fff; }
+        .toggle-btn { background: none; border: none; color: #4ade80; cursor: pointer; font-weight: bold; padding: 0 5px; }
+        
+        input[type="text"], select {
+            width: 100%; box-sizing: border-box; background: #0a0c10; border: 1px solid #1e2330;
+            color: #4ade80; padding: 8px; margin-bottom: 10px; border-radius: 4px; font-family: inherit;
+        }
+        button {
+            width: 100%; background: #4ade80; color: #0f1115; border: none; padding: 10px;
+            font-weight: bold; cursor: pointer; border-radius: 4px; font-family: inherit; margin-bottom: 10px;
+        }
+        button:hover { background: #22c55e; }
+        .btn-secondary { background: #3498db; color: #fff; }
+        .btn-secondary:hover { background: #2980b9; }
+        .btn-danger { background: #e74c3c; color: #fff; }
+        .btn-danger:hover { background: #c0392b; }
+        
+        #btnSearchHere {
+            position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+            z-index: 1000; width: auto; padding: 12px 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.5);
+            border-radius: 30px; background: #f1c40f; color: #000; display: block;
+        }
+        #btnSearchHere:hover { background: #f39c12; }
+        
+        .stats { font-size: 12px; margin-top: 10px; display: none; }
+        .stat-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #1e2330; }
+        .val { color: #4ade80; font-weight: bold; }
+        #status { font-size: 11px; color: #f59e0b; margin-bottom: 10px; text-align: center; }
+        .flex-row { display: flex; align-items: center; margin-bottom: 10px; }
+        .flex-row input { margin-right: 8px; }
+
+        .tee-marker { width: 14px; height: 14px; background: #d0d8e0; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 4px rgba(0,0,0,0.5); cursor: grab; }
+        .layup-marker { width: 12px; height: 12px; background: #e74c3c; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 4px rgba(0,0,0,0.5); }
+        .user-marker { width: 16px; height: 16px; background: #3498db; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 4px rgba(0,0,0,0.5); }
+    </style>
+</head>
+<body>
+
+<div id="ui-panel">
+    <div class="header-row">
+        <h3>Live Layup Tracker</h3>
+        <button class="toggle-btn" onclick="toggleCollapse()">[-]</button>
+    </div>
+    
+    <div id="ui-content">
+        <div id="status">Enter Course & Location</div>
+        <input type="text" id="cityInput" placeholder="City, State (e.g. London, ON)">
+        <input type="text" id="courseInput" placeholder="Course Name (e.g. Forest City)">
+        
+        <button id="btnFind" onclick="locateCourse()">1. Locate Course</button>
+        <button id="btnDownload" class="btn-secondary" onclick="downloadDataFromBounds()" style="display:none;">2. Download Data Here</button>
+        
+        <select id="holeSelect" style="display:none;" onchange="selectHole()">
+            <option value="">-- Select Hole --</option>
+        </select>
+
+        <div class="flex-row" id="gpsToggleRow" style="display:none;">
+            <input type="checkbox" id="gpsToggle" onchange="toggleGPS()">
+            <label for="gpsToggle" style="font-size: 12px; color: #4ade80; cursor: pointer;">Use Live GPS</label>
+        </div>
+
+        <button id="btnClear" class="btn-danger" onclick="clearData()" style="display:none;">Clear Data</button>
+
+        <div id="statsPanel" class="stats">
+            <div class="stat-row"><span id="lblSeg1">Start to Target:</span><span class="val" id="valSeg1">-- yds</span></div>
+            <div class="stat-row"><span>Target to Green:</span><span class="val" id="valSeg2">-- yds</span></div>
+            <div class="stat-row" style="border:none; margin-top:4px;"><span>Total Distance:</span><span class="val" id="valTotal">-- yds</span></div>
+            <div style="font-size: 10px; color: #8899aa; margin-top: 8px; text-align: center;">Click map for layup. Drag white tee to shift start.</div>
+        </div>
+    </div>
+</div>
+
+<button id="btnSearchHere" onclick="searchHere()">Search Map Area</button>
+
+<div id="map"></div>
+
+<script>
+    // Initialize MapLibre (Note: MapLibre uses [lng, lat] coordinate order)
+    const map = new maplibregl.Map({
+        container: 'map',
+        style: {
+            version: 8,
+            sources: {
+                esri: { type: 'raster', tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'], tileSize: 256 }
+            },
+            layers: [{ id: 'esri-imagery', type: 'raster', source: 'esri' }]
+        },
+        center: [-81.168, 43.034],
+        zoom: 14,
+        pitch: 0,
+        dragRotate: true
+    });
+
+    const GC = { fairway: '#7ec850', green: '#28a050', tee: '#d0d8e0', bunker: '#c9a84c', water_hazard: '#5b9bd5', rough: '#4a7a28' };
+    
+    let courseHoles = {};
+    let searchPins = [];
+    let currentHoleKey = null;
+    let activeTeePt = null; // [lng, lat]
+    let targetPt = null;    // [lng, lat]
+
+    let teeMarker = null;
+    let layupMarker = null;
+    let userMarker = null;
+    let userCoords = null;
+    let gpsWatchId = null;
+
+    map.on('load', () => {
+        // Source for OSM Polygons
+        map.addSource('course-polygons', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        
+        // Add layers for each feature type
+        for (const [type, color] of Object.entries(GC)) {
+            map.addLayer({
+                id: `poly-${type}`,
+                type: 'fill',
+                source: 'course-polygons',
+                filter: ['==', 'golf', type],
+                paint: { 'fill-color': color, 'fill-opacity': 0.5 }
+            });
+            map.addLayer({
+                id: `line-${type}`,
+                type: 'line',
+                source: 'course-polygons',
+                filter: ['==', 'golf', type],
+                paint: { 'line-color': '#ffffff', 'line-width': 1, 'line-opacity': 0.3 }
+            });
+        }
+
+        // Source and Layers for Layup Paths and Arrows
+        map.addSource('active-path', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        
+        map.addLayer({
+            id: 'path-line',
+            type: 'line',
+            source: 'active-path',
+            paint: { 'line-color': '#f1c40f', 'line-width': 3, 'line-dasharray': [2, 2] }
+        });
+
+        // Directional Arrows rendering along the path
+        map.addLayer({
+            id: 'path-arrows',
+            type: 'symbol',
+            source: 'active-path',
+            layout: {
+                'symbol-placement': 'line',
+                'symbol-spacing': 50,
+                'text-field': '▶',
+                'text-size': 14,
+                'text-keep-upright': false
+            },
+            paint: { 'text-color': '#f1c40f', 'text-halo-color': '#000', 'text-halo-width': 1 }
+        });
+
+        // Map click logic for layup point
+        map.on('click', (e) => {
+            if (!currentHoleKey) return;
+            targetPt = [e.lngLat.lng, e.lngLat.lat];
+            
+            if (!layupMarker) {
+                const el = document.createElement('div'); el.className = 'layup-marker';
+                layupMarker = new maplibregl.Marker({ element: el }).setLngLat(targetPt).addTo(map);
+            } else {
+                layupMarker.setLngLat(targetPt);
+            }
+            updatePathsAndDistances();
+        });
+    });
+
+    function setStatus(msg, color = '#f59e0b') {
+        const el = document.getElementById('status');
+        el.innerText = msg; el.style.color = color;
+    }
+
+    function toggleCollapse() {
+        const content = document.getElementById('ui-content');
+        const btn = document.querySelector('.toggle-btn');
+        if (content.style.display === 'none') {
+            content.style.display = 'block'; btn.innerText = '[-]';
+        } else {
+            content.style.display = 'none'; btn.innerText = '[+]';
+        }
+    }
+
+    function clearData() {
+        courseHoles = {};
+        currentHoleKey = null; targetPt = null; activeTeePt = null;
+        
+        if (map.getSource('course-polygons')) map.getSource('course-polygons').setData({ type: 'FeatureCollection', features: [] });
+        if (map.getSource('active-path')) map.getSource('active-path').setData({ type: 'FeatureCollection', features: [] });
+        
+        [teeMarker, layupMarker, ...searchPins].forEach(m => { if (m) m.remove(); });
+        searchPins = []; teeMarker = null; layupMarker = null;
+
+        document.getElementById('holeSelect').style.display = 'none';
+        document.getElementById('holeSelect').innerHTML = '<option value="">-- Select Hole --</option>';
+        document.getElementById('statsPanel').style.display = 'none';
+        document.getElementById('btnDownload').style.display = 'none';
+        document.getElementById('gpsToggleRow').style.display = 'none';
+        document.getElementById('btnClear').style.display = 'none';
+        document.getElementById('btnSearchHere').style.display = 'block';
+        
+        map.flyTo({ pitch: 0, bearing: 0 });
+        setStatus('Data cleared.', '#4ade80');
+    }
+
+    async function locateCourse() {
+        const city = document.getElementById('cityInput').value;
+        const course = document.getElementById('courseInput').value;
+        if (!city || !course) return setStatus('Enter both city and course.', '#f87171');
+
+        setStatus('Locating city...', '#4ade80');
+        const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=json&limit=1`);
+        const geoData = await geoRes.json();
+        if (!geoData.length) return setStatus('City not found.', '#f87171');
+
+        setStatus('Finding course on map...', '#4ade80');
+        const safeName = course.replace(/"/g, '\\"');
+        const overpassQ = `[out:json][timeout:15];
+        (
+          node["leisure"="golf_course"]["name"~"${safeName}",i](around:50000, ${geoData[0].lat}, ${geoData[0].lon});
+          way["leisure"="golf_course"]["name"~"${safeName}",i](around:50000, ${geoData[0].lat}, ${geoData[0].lon});
+          relation["leisure"="golf_course"]["name"~"${safeName}",i](around:50000, ${geoData[0].lat}, ${geoData[0].lon});
+        ); out center;`;
+        
+        try {
+            const osmRes = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: overpassQ });
+            const osmData = await osmRes.json();
+            document.getElementById('btnDownload').style.display = 'block';
+
+            if (!osmData.elements.length) {
+                map.flyTo({ center: [geoData[0].lon, geoData[0].lat], zoom: 12 });
+                return setStatus('Name not found. Panned to city.', '#f59e0b');
+            }
+
+            const center = osmData.elements[0].center || osmData.elements[0];
+            map.flyTo({ center: [center.lon, center.lat], zoom: 16 });
+            setStatus('Course located. Click Download or Search Area.', '#4ade80');
+        } catch (err) { setStatus('Error locating course.', '#f87171'); }
+    }
+
+    async function searchHere() {
+        setStatus('Searching for courses in view...', '#4ade80');
+        searchPins.forEach(m => m.remove()); searchPins = [];
+
+        const bounds = map.getBounds();
+        const overpassQ = `[out:json][timeout:15];
+        ( nwr["leisure"="golf_course"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}); ); out center;`;
+
+        try {
+            const res = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: overpassQ });
+            const data = await res.json();
+            if (!data.elements.length) return setStatus('No courses found.', '#f87171');
+            
+            data.elements.forEach(e => {
+                const lat = e.center ? e.center.lat : e.lat;
+                const lon = e.center ? e.center.lon : e.lon;
+                const name = (e.tags && e.tags.name) ? e.tags.name : "Unnamed Course";
+                
+                const popup = new maplibregl.Popup({ offset: 25 }).setHTML(`<b>${name}</b><br><button onclick="downloadCourseData(${lat}, ${lon})" style="margin-top:5px; padding:5px;">Load Course</button>`);
+                const marker = new maplibregl.Marker({ color: '#f1c40f' }).setLngLat([lon, lat]).setPopup(popup).addTo(map);
+                searchPins.push(marker);
+            });
+            setStatus(`Found ${data.elements.length} courses. Click a pin.`, '#4ade80');
+        } catch (err) { setStatus('Search area error.', '#f87171'); }
+    }
+
+    function downloadDataFromBounds() {
+        const center = map.getCenter();
+        downloadCourseData(center.lat, center.lng);
+    }
+
+    async function downloadCourseData(lat, lon) {
+        setStatus('Downloading geometry...', '#3498db');
+        searchPins.forEach(m => m.remove()); searchPins = [];
+        document.getElementById('btnSearchHere').style.display = 'none';
+        
+        const overpassQ = `[out:json][timeout:25];
+        (
+          way["golf"](around:2000, ${lat}, ${lon});
+          node["golf"](around:2000, ${lat}, ${lon});
+          relation["type"="golf_hole"](around:2000, ${lat}, ${lon});
+        ); out body; >; out skel qt;`;
+
+        try {
+            const res = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: overpassQ });
+            const data = await res.json();
+
+            if (!data.elements.length) {
+                document.getElementById('btnSearchHere').style.display = 'block';
+                return setStatus('No golf features found.', '#f87171');
+            }
+
+            processOSM(data.elements);
+            document.getElementById('btnDownload').style.display = 'none';
+            document.getElementById('gpsToggleRow').style.display = 'flex';
+            document.getElementById('btnClear').style.display = 'block';
+        } catch (err) { setStatus('Data download failed.', '#f87171'); }
+    }
+
+    function processOSM(elements) {
+        courseHoles = {};
+        const nodes = {};
+        const geoFeatures = [];
+        const rawFeatures = [];
+
+        elements.forEach(e => { if (e.type === 'node') nodes[e.id] = [e.lon, e.lat]; }); // Note: [lon, lat]
+
+        elements.forEach(e => {
+            if (!e.tags || !e.tags.golf) return;
+            let coords = [];
+            if (e.type === 'way' && e.nodes) coords = e.nodes.map(id => nodes[id]).filter(Boolean);
+            else if (e.type === 'node') coords = [nodes[e.id]];
+            if (!coords.length) return;
+
+            rawFeatures.push({ type: e.tags.golf, coords: coords, ref: e.tags.ref, course: e.tags.course || 'Main' });
+
+            if (e.type === 'way') {
+                // Ensure polygon is closed for GeoJSON
+                const polyCoords = [...coords];
+                if (polyCoords[0][0] !== polyCoords[polyCoords.length-1][0] || polyCoords[0][1] !== polyCoords[polyCoords.length-1][1]) {
+                    polyCoords.push(polyCoords[0]);
+                }
+                geoFeatures.push(turf.polygon([polyCoords], { golf: e.tags.golf }));
+            }
+
+            const ref = e.tags.ref;
+            if (ref) {
+                const track = e.tags.course || 'Main';
+                const key = `${track}_${ref}`;
+                if (!courseHoles[key]) courseHoles[key] = { track, ref };
+                if (e.tags.golf === 'tee') courseHoles[key].tee = coords[0];
+                if (e.tags.golf === 'green') courseHoles[key].green = turf.center(turf.points(coords)).geometry.coordinates;
+                if (e.tags.golf === 'hole') courseHoles[key].line = coords;
+            }
+        });
+
+        // Update map source
+        map.getSource('course-polygons').setData(turf.featureCollection(geoFeatures));
+
+        // Handshake
+        const unreffedGreens = rawFeatures.filter(f => f.type === 'green' && !f.ref);
+        Object.keys(courseHoles).forEach(key => {
+            const h = courseHoles[key];
+            if (h.line) {
+                if (!h.tee) h.tee = h.line[0];
+                if (!h.green) {
+                    const endPt = turf.point(h.line[h.line.length - 1]);
+                    let closest = h.line[h.line.length - 1], minDist = 50; 
+                    unreffedGreens.forEach(g => {
+                        const center = turf.center(turf.points(g.coords)).geometry.coordinates;
+                        const dist = turf.distance(endPt, turf.point(center), { units: 'meters' });
+                        if (dist < minDist) { minDist = dist; closest = center; }
+                    });
+                    h.green = closest;
+                }
+            }
+        });
+
+        populateDropdown();
+    }
+
+    function populateDropdown() {
+        const select = document.getElementById('holeSelect');
+        select.innerHTML = '<option value="">-- Select Hole --</option>';
+        
+        const validHoles = Object.keys(courseHoles)
+            .filter(k => courseHoles[k].tee && courseHoles[k].green)
+            .sort((a, b) => {
+                if (courseHoles[a].track !== courseHoles[b].track) return courseHoles[a].track.localeCompare(courseHoles[b].track);
+                return parseInt(courseHoles[a].ref) - parseInt(courseHoles[b].ref);
+            });
+
+        if (!validHoles.length) return setStatus('Incomplete geometry.', '#f87171');
+
+        validHoles.forEach(key => {
+            const h = courseHoles[key];
+            const opt = document.createElement('option');
+            opt.value = key;
+            opt.innerText = h.track !== 'Main' ? `${h.track} - Hole ${h.ref}` : `Hole ${h.ref}`;
+            select.appendChild(opt);
+        });
+
+        select.style.display = 'block';
+        setStatus(`Mapped ${validHoles.length} holes.`, '#4ade80');
+    }
+
+    function selectHole() {
+        const key = document.getElementById('holeSelect').value;
+        if (!key) { currentHoleKey = null; return; }
+        
+        currentHoleKey = key;
+        targetPt = null; 
+        const h = courseHoles[key];
+        
+        activeTeePt = h.tee;
+
+        // Dynamic Bearing Calculation
+        const brg = turf.bearing(turf.point(activeTeePt), turf.point(h.green));
+
+        if (!userCoords) {
+            map.flyTo({ center: activeTeePt, zoom: 17.5, bearing: brg, pitch: 0 });
+        }
+
+        if (layupMarker) layupMarker.remove(); layupMarker = null;
+        if (teeMarker) teeMarker.remove();
+        
+        const el = document.createElement('div'); el.className = 'tee-marker';
+        teeMarker = new maplibregl.Marker({ element: el, draggable: true }).setLngLat(activeTeePt).addTo(map);
+        
+        teeMarker.on('dragend', () => {
+            const lngLat = teeMarker.getLngLat();
+            activeTeePt = [lngLat.lng, lngLat.lat];
+            updatePathsAndDistances();
+        });
+
+        updatePathsAndDistances();
+    }
+
+    function updatePathsAndDistances() {
+        if (!currentHoleKey) return;
+        const green = courseHoles[currentHoleKey].green;
+        const startPt = userCoords ? userCoords : activeTeePt;
+        const startLabel = userCoords ? "You" : "Tee";
+
+        const coords = targetPt ? [startPt, targetPt, green] : [startPt, green];
+        const line = turf.lineString(coords);
+        
+        map.getSource('active-path').setData(turf.featureCollection([line]));
+
+        if (targetPt) {
+            const d1 = Math.round(turf.distance(turf.point(startPt), turf.point(targetPt), { units: 'yards' }));
+            const d2 = Math.round(turf.distance(turf.point(targetPt), turf.point(green), { units: 'yards' }));
+            updateUI(d1, d2, d1 + d2, startLabel);
+        } else {
+            const dist = Math.round(turf.distance(turf.point(startPt), turf.point(green), { units: 'yards' }));
+            updateUI(dist, 0, dist, startLabel);
+        }
+    }
+
+    function updateUI(seg1, seg2, total, startLabel) {
+        document.getElementById('statsPanel').style.display = 'block';
+        document.getElementById('lblSeg1').innerText = `${startLabel} to Target:`;
+        document.getElementById('valSeg1').innerText = seg1 + ' yds';
+        document.getElementById('valSeg2').innerText = seg2 > 0 ? seg2 + ' yds' : '-- yds';
+        document.getElementById('valTotal').innerText = total + ' yds';
+    }
+
+    function toggleGPS() {
+        const useGPS = document.getElementById('gpsToggle').checked;
+        if (useGPS) {
+            if ('geolocation' in navigator) {
+                setStatus('Acquiring GPS...', '#f59e0b');
+                gpsWatchId = navigator.geolocation.watchPosition(pos => {
+                    setStatus(`GPS Active. ±${Math.round(pos.coords.accuracy)}m`, '#4ade80');
+                    userCoords = [pos.coords.longitude, pos.coords.latitude];
+                    
+                    if (!userMarker) {
+                        const el = document.createElement('div'); el.className = 'user-marker';
+                        userMarker = new maplibregl.Marker({ element: el }).setLngLat(userCoords).addTo(map);
+                    } else {
+                        userMarker.setLngLat(userCoords);
+                    }
+                    if (currentHoleKey) updatePathsAndDistances();
+                }, err => {
+                    setStatus('GPS Error/Denied.', '#f87171');
+                    document.getElementById('gpsToggle').checked = false; toggleGPS();
+                }, { enableHighAccuracy: true });
+            }
+        } else {
+            if (gpsWatchId !== null) { navigator.geolocation.clearWatch(gpsWatchId); gpsWatchId = null; }
+            if (userMarker) { userMarker.remove(); userMarker = null; }
+            userCoords = null;
+            setStatus('GPS Disabled.', '#f59e0b');
+            if (currentHoleKey) updatePathsAndDistances();
+        }
+    }
+</script>
+</body>
+</html>
